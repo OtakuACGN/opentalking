@@ -74,6 +74,7 @@ class FlashTalkWSClient:
         self._ws_url = ws_url or _default_ws_url()
         self._extra_headers = dict(extra_headers or {})
         self._ws = None
+        self._backend_name = self._infer_backend_name(self._ws_url)
         # Populated after init_session
         self.frame_num: int = 0
         self.motion_frames_num: int = 0
@@ -83,6 +84,13 @@ class FlashTalkWSClient:
         self.width: int = 0
         self.sample_rate: int = 16000
         self.audio_chunk_samples: int = 0  # slice_len * sample_rate // fps
+
+    @staticmethod
+    def _infer_backend_name(ws_url: str) -> str:
+        suffix = ws_url.rstrip("/").rsplit("/", 1)[-1].strip().lower()
+        if suffix in {"flashtalk", "musetalk", "wav2lip", "flashhead", "mock"}:
+            return suffix
+        return "audio2video"
 
     async def connect(self) -> None:
         kwargs: dict = dict(
@@ -108,7 +116,7 @@ class FlashTalkWSClient:
                 )
         else:
             self._ws = await ws_connect(self._ws_url, **kwargs)
-        log.info("Connected to FlashTalk server at %s", self._ws_url)
+        log.info("Connected to %s server at %s", self._backend_name, self._ws_url)
 
     async def init_session(
         self,
@@ -166,7 +174,7 @@ class FlashTalkWSClient:
         resp = json.loads(await self._ws.recv())
 
         if resp.get("type") == "error":
-            raise RuntimeError(f"FlashTalk init failed: {resp.get('message')}")
+            raise RuntimeError(f"{self._backend_name} init failed: {resp.get('message')}")
 
         self.frame_num = resp["frame_num"]
         self.motion_frames_num = resp["motion_frames_num"]
@@ -176,7 +184,8 @@ class FlashTalkWSClient:
         self.width = resp["width"]
         self.audio_chunk_samples = self.slice_len * self.sample_rate // self.fps
         log.info(
-            "FlashTalk session init OK: %dx%d, %d fps, slice_len=%d, chunk_samples=%d",
+            "%s session init OK: %dx%d, %d fps, slice_len=%d, chunk_samples=%d",
+            self._backend_name,
             self.width, self.height, self.fps, self.slice_len, self.audio_chunk_samples,
         )
         return resp
@@ -208,7 +217,7 @@ class FlashTalkWSClient:
         # Check for JSON error response
         if isinstance(resp, str):
             msg = json.loads(resp)
-            raise RuntimeError(f"FlashTalk generate error: {msg.get('message')}")
+            raise RuntimeError(f"{self._backend_name} generate error: {msg.get('message')}")
 
         # Parse binary video response (JPEG-compressed)
         if len(resp) < 8 or resp[:4] != MAGIC_VIDEO:
@@ -247,8 +256,9 @@ class FlashTalkWSClient:
                 timestamp_ms=0.0,
             ))
         log.info(
-            "FlashTalk WS chunk: frames=%d payload=%dKB wait=%.2fs parse=%.3fs "
+            "%s WS chunk: frames=%d payload=%dKB wait=%.2fs parse=%.3fs "
             "decode=%.3fs workers=%d",
+            self._backend_name,
             frame_count,
             len(resp) // 1024,
             t_recv - t0,

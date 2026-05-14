@@ -57,7 +57,7 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-omnirt_url="${OMNIRT_ENDPOINT:-http://127.0.0.1:9000}"
+omnirt_url="${OMNIRT_ENDPOINT:-http://127.0.0.1:${OMNIRT_PORT:-9000}}"
 run_dir="$DIGITAL_HUMAN_HOME/run"
 
 api_pid_file="$run_dir/opentalking-api-$api_port.pid"
@@ -153,4 +153,6 @@ if [[ "$legacy_web_pid_file" != "$web_pid_file" ]]; then
 fi
 show_pid "OmniRT Wav2Lip" "$run_dir/omnirt-wav2lip.pid"
 show_pid "OmniRT FlashTalk endpoint" "$run_dir/omnirt-flashtalk.pid"
+show_pid "OmniRT MuseTalk WS backend" "$run_dir/omnirt-musetalk-ws.pid"
+show_pid "OmniRT MuseTalk gateway" "$run_dir/omnirt-musetalk.pid"
 check_url "OmniRT /v1/audio2video/models" "$omnirt_url/v1/audio2video/models"

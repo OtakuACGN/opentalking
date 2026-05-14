@@ -97,11 +97,15 @@ echo "  api:  http://127.0.0.1:$backend_port"
 (
   cd "$web_dir"
   export VITE_BACKEND_PORT="$backend_port"
-  exec ./node_modules/.bin/vite --host "$web_host" --port "$web_port"
-) >"$log_file" 2>&1 &
+  setsid ./node_modules/.bin/vite --host "$web_host" --port "$web_port" >"$log_file" 2>&1 < /dev/null &
+  echo "$!" >"$pid_file"
+)
 
-pid="$!"
-echo "$pid" > "$pid_file"
+pid="$(cat "$pid_file" 2>/dev/null || true)"
+if [[ -z "$pid" ]]; then
+  echo "Failed to capture OpenTalking frontend pid." >&2
+  exit 1
+fi
 
 for _ in {1..60}; do
   if ! kill -0 "$pid" >/dev/null 2>&1; then

@@ -30,8 +30,8 @@ SYNTHESIS_PROVIDERS = ("mock", "flashtalk", "musetalk", "wav2lip", "flashhead", 
 
 # What the upstream backend can actually serve TODAY.
 # `mock` is in-process and always works. OmniRT now exposes model-specific
-# FlashTalk-compatible routes for FlashTalk and Wav2Lip.
-SUPPORTED_MODELS = frozenset({"mock", "flashtalk", "wav2lip"})
+# FlashTalk-compatible routes for FlashTalk, MuseTalk and Wav2Lip.
+SUPPORTED_MODELS = frozenset({"mock", "flashtalk", "musetalk", "wav2lip"})
 
 
 def list_available_synthesis() -> list[str]:

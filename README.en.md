@@ -228,34 +228,265 @@ bash scripts/quickstart/stop_all.sh --api-port 8010 --web-port 5180
 
 ### Path 2: Lightweight adapter validation
 
-**Goal**: iterate on Avatar assets, validate model adapters, run real wav2lip / musetalk / flashtalk models.
-**How**: choose a per-model backend. Lightweight models can run locally or behind a direct single-model WebSocket; [OmniRT](https://github.com/datascale-ai/omnirt) remains the compatible default for remote validation.
+Goal: validate Avatar assets, model adapters, and real lip-sync / talking-head rendering. Lightweight models can run behind a local adapter, a direct single-model WebSocket, or the current OmniRT compatibility path.
 
-For a quick real-model smoke test today, start the Wav2Lip OmniRT compatibility path
-first. Wav2Lip is a lightweight model, so the recommended deployment direction is a
-local or direct single-model backend once the local adapter is installed:
+First install OmniRT in the sibling checkout and prepare the model directory:
 
-1. Install OpenTalking with Python 3.11.
-2. Install OmniRT in the sibling `omnirt/` checkout with `uv sync --extra server --python 3.11`.
-3. Place `wav2lip384.pth` and `s3fd.pth` under `$OMNIRT_MODEL_ROOT/wav2lip/`.
-4. Start the OmniRT helper and then start OpenTalking with `--omnirt`.
+```bash
+export DIGITAL_HUMAN_HOME=/opt/digital_human
+export OMNIRT_MODEL_ROOT="$DIGITAL_HUMAN_HOME/models"
+
+mkdir -p "$DIGITAL_HUMAN_HOME"
+cd "$DIGITAL_HUMAN_HOME"
+git clone https://github.com/datascale-ai/omnirt.git
+cd omnirt
+uv sync --extra server --python 3.11
+source .venv/bin/activate
+uv pip install -U "huggingface_hub[cli]"
+```
+
+#### 1. Download model weights
+
+Some models require accepting a license or requesting access on Hugging Face first. If a download returns `401`, `403`, or `Repository not found`, open the model page, confirm access, and run `hf auth login`.
+
+Download only the models you plan to run:
+
+- Choose **Wav2Lip** for the fastest real digital-human smoke test.
+- Choose **MuseTalk** to validate a full-frame talking-head path.
+- Choose **FlashTalk** for higher quality if hardware resources are sufficient.
+- Download multiple models only if you need to test model switching.
+
+If Hugging Face is slow or unstable, you can enable a mirror first:
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+hf auth login
+```
+
+Download Wav2Lip:
+
+```bash
+mkdir -p "$OMNIRT_MODEL_ROOT/wav2lip"
+hf download Pypa/wav2lip384 \
+  wav2lip384.pth \
+  --local-dir "$OMNIRT_MODEL_ROOT/wav2lip"
+hf download rippertnt/wav2lip \
+  s3fd.pth \
+  --local-dir "$OMNIRT_MODEL_ROOT/wav2lip"
+```
+
+Check the Wav2Lip files:
+
+```bash
+test -f "$OMNIRT_MODEL_ROOT/wav2lip/wav2lip384.pth"
+test -f "$OMNIRT_MODEL_ROOT/wav2lip/s3fd.pth"
+```
+
+Download MuseTalk:
+
+MuseTalk runtime code is managed by OmniRT through `runtime install musetalk`; OpenTalking does not need an extra MuseTalk repo setting. You only need to place the weights under `$OMNIRT_MODEL_ROOT` using the MuseTalk v1.5 layout:
+
+```text
+$OMNIRT_MODEL_ROOT/
+  musetalk/
+    pytorch_model.bin
+    musetalk.json
+  sd-vae-ft-mse/
+    config.json
+    diffusion_pytorch_model.bin
+  whisper/
+    tiny.pt
+  dwpose/
+    dw-ll_ucoco_384.pth
+  face-parse-bisenet/
+    79999_iter.pth
+```
+
+Check the MuseTalk files:
+
+```bash
+test -f "$OMNIRT_MODEL_ROOT/musetalk/pytorch_model.bin"
+test -f "$OMNIRT_MODEL_ROOT/musetalk/musetalk.json"
+test -f "$OMNIRT_MODEL_ROOT/sd-vae-ft-mse/config.json"
+test -f "$OMNIRT_MODEL_ROOT/sd-vae-ft-mse/diffusion_pytorch_model.bin"
+test -f "$OMNIRT_MODEL_ROOT/whisper/tiny.pt"
+test -f "$OMNIRT_MODEL_ROOT/dwpose/dw-ll_ucoco_384.pth"
+test -f "$OMNIRT_MODEL_ROOT/face-parse-bisenet/79999_iter.pth"
+```
+
+Notes:
+
+- The official MuseTalk README / `download_weights.sh` also mentions `syncnet/latentsync_syncnet.pt`.
+- The current OpenTalking + OmniRT MuseTalk path only uses the weights required for realtime inference: UNet, VAE, Whisper, DWPose, and face-parse.
+- In the upstream repo, `syncnet` is mainly used for training, evaluation, or lip-sync scoring. It is not required by the current online `musetalk_ws_server.py` inference path.
+- If you later need to train MuseTalk, reproduce upstream experiments, or add an offline SyncNet scoring flow, download `syncnet` separately.
+- `whisper/tiny.pt` must be the official OpenAI `openai-whisper` checkpoint. Do not substitute it by renaming Hugging Face `pytorch_model.bin`.
+
+For more complete weight layout and troubleshooting details, see:
+
+- `omnirt/model_backends/musetalk/README.md`
+- `omnirt/docs/user_guide/serving/musetalk_ws.md`
+
+Download FlashTalk (optional):
+
+```bash
+hf download Soul-AILab/SoulX-FlashTalk-14B \
+  --local-dir "$OMNIRT_MODEL_ROOT/SoulX-FlashTalk-14B"
+
+hf download TencentGameMate/chinese-wav2vec2-base \
+  --local-dir "$OMNIRT_MODEL_ROOT/chinese-wav2vec2-base"
+```
+
+SoulX-FlashTalk inference code is not a model weight. In the recommended Ascend 910B path, OmniRT runtime install prepares the code, applies patches, and records runtime state. You only need to point to your own SoulX checkout when using a custom fork or a manual CUDA path.
+
+Model pages:
+
+- Wav2Lip 384: https://huggingface.co/Pypa/wav2lip384
+- Wav2Lip S3FD: https://huggingface.co/rippertnt/wav2lip
+- MuseTalk code: https://github.com/TMElyralab/MuseTalk
+- SoulX FlashTalk code: https://github.com/Soul-AILab/SoulX-FlashTalk
+- SoulX FlashTalk 14B: https://huggingface.co/Soul-AILab/SoulX-FlashTalk-14B
+- Chinese wav2vec2: https://huggingface.co/TencentGameMate/chinese-wav2vec2-base
+
+#### 2. Start Wav2Lip on OmniRT
+
+CUDA GPU:
 
 ```bash
 cd "$DIGITAL_HUMAN_HOME/opentalking"
 bash scripts/quickstart/start_omnirt_wav2lip.sh --device cuda
 ```
 
-If OmniRT is on a remote GPU / NPU host, expose its `9000` port and use that host in `--omnirt`.
+Ascend 910B NPU:
 
-For models configured with `backend: omnirt`, OpenTalking derives each audio2video WebSocket route from the OmniRT endpoint. For example, `--omnirt http://omnirt:9000` + `model=wav2lip` becomes `ws://omnirt:9000/v1/audio2video/wav2lip`.
-
-Start OpenTalking and point it at OmniRT:
+Source the CANN environment before starting the NPU service:
 
 ```bash
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+```
+
+> If your CANN path differs, replace it with the actual `set_env.sh` path.
+
+```bash
+cd "$DIGITAL_HUMAN_HOME/opentalking"
+bash scripts/quickstart/start_omnirt_wav2lip.sh --device npu
+```
+
+Verify:
+
+```bash
+curl http://127.0.0.1:9000/v1/audio2video/models
+```
+
+`wav2lip` should report `connected: true`.
+
+This helper sets the following defaults:
+
+- `OMNIRT_WAV2LIP_CPU_THREADS=4`
+- `OMNIRT_WAV2LIP_PRELOAD=1`
+- `OMNIRT_WAV2LIP_MAX_LONG_EDGE=832`
+- CUDA batch size defaults to `16`
+- Ascend NPU batch size defaults to `8`
+
+Once dependencies are installed, you can add `--skip-install` on repeated starts. If your OmniRT checkout does not yet define the `wav2lip-cuda` extra, the helper falls back to `model_backends/wav2lip/requirements-wav2lip.txt`; updating OmniRT to the latest `main` is also recommended.
+
+#### 3. Start MuseTalk on OmniRT
+
+MuseTalk follows the same orchestration pattern as Wav2Lip and FlashTalk: inference and serving both run on OmniRT, and OpenTalking only connects through the unified `audio2video` interface. Unlike Wav2Lip's single-layer `serve-avatar-ws`, the MuseTalk helper starts a WebSocket backend first and then an OmniRT gateway.
+
+CUDA GPU:
+
+```bash
+cd "$DIGITAL_HUMAN_HOME/opentalking"
+bash scripts/quickstart/start_omnirt_musetalk.sh --device cuda
+```
+
+If port `9000` or the default GPU is already in use, change the port or GPU index directly. For example:
+
+```bash
+export CUDA_VISIBLE_DEVICES=4
+bash scripts/quickstart/start_omnirt_musetalk.sh \
+  --device cuda \
+  --port 9001 \
+  --musetalk-port 8766
+```
+
+Ascend 910B NPU:
+
+Source the CANN environment before starting the NPU service:
+
+```bash
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+```
+
+> If your CANN path differs, replace it with the actual `set_env.sh` path.
+
+```bash
+cd "$DIGITAL_HUMAN_HOME/opentalking"
+bash scripts/quickstart/start_omnirt_musetalk.sh --device npu
+```
+
+Verify:
+
+```bash
+curl http://127.0.0.1:9000/v1/audio2video/models
+```
+
+`musetalk` should report `connected: true`.
+
+This helper does two things:
+
+- Starts the MuseTalk WS backend, default `127.0.0.1:8766`
+- Starts the OmniRT gateway, default `0.0.0.0:9000`
+
+Once dependencies are installed, you can add `--skip-install` on repeated starts.
+
+#### 4. Start FlashTalk on OmniRT (optional)
+
+FlashTalk is heavier than Wav2Lip. It is better to validate Wav2Lip first, then start FlashTalk.
+
+CUDA GPU:
+
+```bash
+cd "$DIGITAL_HUMAN_HOME/opentalking"
+bash scripts/quickstart/start_omnirt_flashtalk.sh --device cuda --nproc 1
+```
+
+Ascend 910B NPU:
+
+Source the CANN environment before starting the NPU service:
+
+```bash
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+```
+
+> If your CANN path differs, replace it with the actual `set_env.sh` path.
+
+```bash
+cd "$DIGITAL_HUMAN_HOME/opentalking"
+bash scripts/quickstart/start_omnirt_flashtalk.sh --device npu --nproc 8
+```
+
+Verify:
+
+```bash
+curl http://127.0.0.1:9000/v1/audio2video/models
+```
+
+`flashtalk` should report `connected: true`.
+
+#### 5. Start OpenTalking in real-model mode and connect OmniRT
+
+Keep the OmniRT service from step 2, 3, or 4 running, then start the OpenTalking API and frontend:
+
+```bash
+export DIGITAL_HUMAN_HOME=/opt/digital_human
+
+cd "$DIGITAL_HUMAN_HOME/opentalking"
 bash scripts/quickstart/start_all.sh --omnirt http://127.0.0.1:9000
 ```
 
-For custom OpenTalking ports:
+For custom ports:
 
 ```bash
 bash scripts/quickstart/start_all.sh \
@@ -264,7 +495,7 @@ bash scripts/quickstart/start_all.sh \
   --web-port 5180
 ```
 
-If OmniRT runs on a remote machine:
+If OmniRT runs on a remote GPU / NPU machine, change `--omnirt` to `http://<gpu-or-npu-server-ip>:9000`:
 
 ```bash
 bash scripts/quickstart/start_all.sh \
@@ -273,13 +504,16 @@ bash scripts/quickstart/start_all.sh \
   --web-port 5180
 ```
 
-The default API models endpoint is `http://127.0.0.1:8000/models`; with `--api-port 8010`, use port `8010`. The default frontend is `http://localhost:5173`; with `--web-port 5180`, use port `5180`.
+The default frontend is `http://localhost:5173`; if you use `--web-port 5180`, open `http://localhost:5180`.
 
-For helper-managed services, use the same custom port arguments when checking status. Without port arguments, `stop_all.sh` stops all OpenTalking API / frontend instances managed by the quickstart scripts; pass ports to stop only a specific instance:
+Choose `wav2lip`, `musetalk`, or `flashtalk`. Real-model cards should show **Connected**; `mock / driverless mode` shows **No connection required**.
+
+Check or stop helper-managed services:
 
 ```bash
-bash scripts/quickstart/status.sh --api-port 8010 --web-port 5180
-bash scripts/quickstart/stop_all.sh --api-port 8010 --web-port 5180
+cd "$DIGITAL_HUMAN_HOME/opentalking"
+bash scripts/quickstart/status.sh
+bash scripts/quickstart/stop_all.sh
 ```
 
 Avatar asset format: see [Avatar Format](docs/en/user-guide/avatar-format.md).
