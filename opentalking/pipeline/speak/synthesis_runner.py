@@ -1807,6 +1807,7 @@ class FlashTalkRunner:
                     pcm_chunk, sub_tag = item
                     if self._interrupt.is_set():
                         break
+                    await self._wait_media_backpressure()
                     g0 = time.perf_counter()
                     frames = await self._generate_flashtalk_frames(pcm_chunk)
                     flashtalk_gen_sum_s += time.perf_counter() - g0
@@ -2292,6 +2293,50 @@ class FlashTalkRunner:
         )
         return frames
 
+    async def _wait_media_backpressure(self) -> None:
+        """Throttle MuseTalk generation when WebRTC queues are already ahead."""
+        if self.model_type != "musetalk" or not self.webrtc:
+            return
+        if not _env_bool("MUSETALK_BACKPRESSURE_ENABLE", True):
+            return
+
+        video_high = max(1, _env_int("MUSETALK_VIDEO_HIGH_WATERMARK", 50))
+        video_low = max(0, min(video_high, _env_int("MUSETALK_VIDEO_LOW_WATERMARK", 30)))
+        audio_high = max(1, _env_int("MUSETALK_AUDIO_HIGH_WATERMARK", 100))
+        audio_low = max(0, min(audio_high, _env_int("MUSETALK_AUDIO_LOW_WATERMARK", 60)))
+        sleep_s = max(0.005, _env_float("MUSETALK_BACKPRESSURE_SLEEP_MS", 20.0) / 1000.0)
+        log_every_s = max(0.25, _env_float("MUSETALK_BACKPRESSURE_LOG_INTERVAL_MS", 1000.0) / 1000.0)
+
+        waited = 0.0
+        last_log = time.monotonic()
+        while not self._interrupt.is_set() and not self._closed and self.webrtc:
+            vq = self.webrtc.video._queue.qsize()
+            aq = self.webrtc.audio._queue.qsize()
+            if vq <= video_high and aq <= audio_high:
+                break
+
+            now = time.monotonic()
+            if now - last_log >= log_every_s:
+                log.info(
+                    "MuseTalk backpressure: wait %.2fs vq=%d/%d->%d aq=%d/%d->%d",
+                    waited, vq, video_high, video_low, aq, audio_high, audio_low,
+                )
+                last_log = now
+
+            await asyncio.sleep(sleep_s)
+            waited += sleep_s
+
+            vq = self.webrtc.video._queue.qsize()
+            aq = self.webrtc.audio._queue.qsize()
+            if vq <= video_low and aq <= audio_low:
+                break
+
+        if waited > 0.0 and self.webrtc:
+            log.info(
+                "MuseTalk backpressure released: waited=%.2fs vq=%d aq=%d",
+                waited, self.webrtc.video._queue.qsize(), self.webrtc.audio._queue.qsize(),
+            )
+
     async def _queue_av_chunk(self, pcm_chunk: np.ndarray, frames: list[Any]) -> None:
         """Queue generated video frames interleaved with matching audio.
 
@@ -2337,6 +2382,7 @@ class FlashTalkRunner:
 
         sample_rate = max(1, int(getattr(self.flashtalk, "sample_rate", 16000) or 16000))
         default_frame_interval_ms = 1000.0 / max(1.0, float(getattr(self.flashtalk, "fps", 25) or 25))
+        av_offset_ms = _env_float("AV_OFFSET_MS", 0.0)
 
         for i, frame in enumerate(frames):
             if self._interrupt.is_set():
@@ -2349,7 +2395,7 @@ class FlashTalkRunner:
                 if len(audio_slice) > 0
                 else default_frame_interval_ms
             )
-            frame.timestamp_ms = self._av_ts_ms
+            frame.timestamp_ms = max(0.0, self._av_ts_ms + av_offset_ms)
             await self._video_put_safe(frame)
             # Pair each frame with its proportional audio slice.
             # Use _audio_put_safe (20ms sub-chunks) for clean opus encoding,
