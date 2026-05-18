@@ -79,8 +79,9 @@ Coordinates are normalized to the image dimensions. When a single-image wav2lip 
 is uploaded through `/avatars/custom`, OpenTalking attempts mouth detection using
 MediaPipe locally. If detection fails, the upload succeeds without an `animation`
 field; in this case, OmniRT's wav2lip backend falls back to its built-in alignment.
-The `wav2lip_postprocess_mode` flag controls whether server-side post-processing is
-applied; the default is disabled.
+The `wav2lip_postprocess_mode` flag controls the server-side post-processing mode.
+OpenTalking local Wav2Lip defaults to `easy_improved`; `easy_enhanced` is accepted
+by the backend/API but requires GFPGAN dependencies and checkpoint assets.
 
 ## QuickTalk manifest example
 

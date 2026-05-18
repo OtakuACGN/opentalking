@@ -176,6 +176,7 @@ def _create_runner(
         llm_model=settings.llm_model,
         llm_system_prompt=str(task.get("llm_system_prompt", "") or settings.llm_system_prompt)
         or "你是一个友好的数字人助手，请用简洁的语言回答问题。不要使用表情符号或emoji。",
+        wav2lip_postprocess_mode=str(task.get("wav2lip_postprocess_mode", "") or ""),
     )
 
 
@@ -414,15 +415,26 @@ async def handle_worker_task(
                 (time.time() - float(enqueue_unix)) * 1000.0,
                 sid,
             )
-        runner.create_speak_task(
-            text,
-            tts_voice=tts_voice or None,
-            tts_provider=tts_provider or None,
-            tts_model=tts_model or None,
-            enqueue_unix=float(enqueue_unix)
-            if isinstance(enqueue_unix, (int, float))
-            else None,
+        enqueue_value = (
+            float(enqueue_unix) if isinstance(enqueue_unix, (int, float)) else None
         )
+        create_chat_task = getattr(runner, "create_chat_task", None)
+        if callable(create_chat_task):
+            create_chat_task(
+                text,
+                tts_voice=tts_voice or None,
+                tts_provider=tts_provider or None,
+                tts_model=tts_model or None,
+                enqueue_unix=enqueue_value,
+            )
+        else:
+            runner.create_speak_task(
+                text,
+                tts_voice=tts_voice or None,
+                tts_provider=tts_provider or None,
+                tts_model=tts_model or None,
+                enqueue_unix=enqueue_value,
+            )
     elif cmd == "speak_flashtalk_audio":
         pcm_path = task.get("pcm_path")
         pcm_key = task.get("pcm_key")

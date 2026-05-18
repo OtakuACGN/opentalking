@@ -48,6 +48,32 @@ quickstart_describe_uv_default_index() {
   printf '%s\n' "${UV_DEFAULT_INDEX:-${UV_INDEX_URL:-default}}"
 }
 
+quickstart_source_env() {
+  local env_file="$1"
+  local restore_allexport=1
+  local previous_exports=""
+  local status=0
+
+  if [[ ! -f "$env_file" ]]; then
+    return 0
+  fi
+
+  previous_exports="$(export -p | sed 's/^declare -x /export /')"
+
+  case "$-" in
+    *a*) restore_allexport=0 ;;
+  esac
+
+  set -a
+  # shellcheck disable=SC1090
+  source "$env_file" || status=$?
+  if [[ "$restore_allexport" == "1" ]]; then
+    set +a
+  fi
+  eval "$previous_exports"
+  return "$status"
+}
+
 quickstart_port_in_use() {
   local port="$1"
 

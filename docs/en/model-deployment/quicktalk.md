@@ -15,26 +15,30 @@ Local CUDA GPU. Validate `mock` first, then connect QuickTalk assets and a templ
 
 ## Weights
 
-QuickTalk assets are consumed by the local adapter. OpenTalking does not host the download
-source. Prepare an asset bundle with `hdModule` and point configuration or the avatar
-manifest to it.
+The QuickTalk local adapter loads weights in the OpenTalking process and does not require OmniRT. Place the model weights, HuBERT files, InsightFace assets, and caches under repository-root `models/quicktalk/`.
 
 ## Directory Layout
 
 ```text
-$OMNIRT_MODEL_ROOT/quicktalk/hdModule/
-└── checkpoints/
-    ├── 256.onnx
-    ├── repair.npy
-    ├── chinese-hubert-large/
-    └── auxiliary_min/ or auxiliary/
+models/
+  quicktalk/
+    checkpoints/
+      quicktalk.pth or 256.onnx
+      repair.npy
+      chinese-hubert-large/
+        pytorch_model.bin
+      auxiliary/models/buffalo_l/ or auxiliary_min/
+        det_10g.onnx
 ```
+
+If you already have a legacy asset bundle organized as `hdModule/checkpoints/`, `OPENTALKING_QUICKTALK_ASSET_ROOT` may point either to the parent directory or to `hdModule`; the adapter normalizes it to the directory that contains `checkpoints/`.
 
 ## Configuration
 
 ```env title=".env"
-OPENTALKING_QUICKTALK_ASSET_ROOT=/absolute/path/to/models/quicktalk/hdModule
-OPENTALKING_QUICKTALK_TEMPLATE_VIDEO=/absolute/path/to/template.mp4
+OPENTALKING_QUICKTALK_ASSET_ROOT=/absolute/path/to/opentalking/models/quicktalk
+# Optional: built-in QuickTalk avatars declare template_video in their manifests; custom avatars may override it here.
+# OPENTALKING_QUICKTALK_TEMPLATE_VIDEO=/absolute/path/to/template.mp4
 OPENTALKING_QUICKTALK_WORKER_CACHE=1
 OPENTALKING_TORCH_DEVICE=cuda:0
 ```
@@ -45,7 +49,7 @@ Avatar manifest:
 {
   "model_type": "quicktalk",
   "metadata": {
-    "asset_root": "/absolute/path/to/models/quicktalk/hdModule",
+    "asset_root": "/absolute/path/to/opentalking/models/quicktalk",
     "template_video": "/absolute/path/to/template.mp4"
   }
 }
@@ -54,13 +58,20 @@ Avatar manifest:
 ## Start
 
 ```bash title="Terminal"
-OPENTALKING_QUICKTALK_BACKEND=local bash scripts/quickstart/start_all.sh
+export OPENTALKING_TORCH_DEVICE=cuda:0
+export OPENTALKING_QUICKTALK_ASSET_ROOT="$DIGITAL_HUMAN_HOME/opentalking/models/quicktalk"
+export OPENTALKING_QUICKTALK_WORKER_CACHE=1
+
+cd "$DIGITAL_HUMAN_HOME/opentalking"
+bash scripts/start_unified.sh --backend local --model quicktalk --api-port 8210 --web-port 5280
 ```
+
+Open `http://localhost:5280`, select the `QuickTalk Local` avatar, and select the `quicktalk` model. If you omit `--web-port`, the default frontend URL is `http://localhost:5173`.
 
 ## `/models` Verification
 
 ```bash title="Terminal"
-curl -s http://127.0.0.1:8000/models | jq '.statuses[] | select(.id=="quicktalk")'
+curl -s http://127.0.0.1:8210/models | jq '.statuses[] | select(.id=="quicktalk")'
 ```
 
 Expected:

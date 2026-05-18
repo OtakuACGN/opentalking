@@ -21,6 +21,7 @@ from apps.api.core.config import get_settings
 from apps.api.routes import avatars, events, health, models, sessions, tts_preview, voices
 from opentalking.voice.store import init_voice_store
 from opentalking.avatar.wav2lip_preload import preload_wav2lip_assets
+from opentalking.providers.synthesis.backends import resolve_model_backend
 from opentalking.core.in_memory_redis import InMemoryRedis
 from opentalking.pipeline.session.runner import SessionRunner
 from opentalking.runtime.task_consumer import consume_task_queue
@@ -95,7 +96,8 @@ async def unified_lifespan(app: FastAPI):
     )
     preload_task: asyncio.Task[None] | None = None
     omnirt_endpoint = (settings.omnirt_endpoint or "").strip()
-    if omnirt_endpoint and settings.wav2lip_preload:
+    wav2lip_backend = resolve_model_backend("wav2lip", settings).backend
+    if omnirt_endpoint and settings.wav2lip_preload and wav2lip_backend == "omnirt":
         preload_task = asyncio.create_task(
             preload_wav2lip_assets(
                 avatars_root,

@@ -376,14 +376,15 @@ If the server cannot access Hugging Face directly, download the files on a machi
 ```bash
 export OPENTALKING_WAV2LIP_MODEL_ROOT="$DIGITAL_HUMAN_HOME/opentalking/models/wav2lip"
 export OPENTALKING_WAV2LIP_DEVICE=cuda
-export OPENTALKING_WAV2LIP_BATCH_SIZE=4
-export OPENTALKING_WAV2LIP_MAX_LONG_EDGE=768
+export OPENTALKING_WAV2LIP_BATCH_SIZE=16
+export OPENTALKING_WAV2LIP_MAX_LONG_EDGE=832
+export OPENTALKING_WAV2LIP_FACE_DET_DEVICE=cpu
 
 cd "$DIGITAL_HUMAN_HOME/opentalking"
 bash scripts/start_unified.sh --backend local --model wav2lip --api-port 8210 --web-port 5280
 ```
 
-Open `http://localhost:5173`, select a built-in Wav2Lip avatar such as `singer`, `office-woman`, or `ancient-beauty`, select the `wav2lip` model, and start a conversation. The first load initializes the Wav2Lip checkpoint, S3FD face detector, and avatar cache, which may take tens of seconds.
+Open `http://localhost:5280`, select a built-in Wav2Lip avatar such as `singer`, `office-woman`, or `ancient-beauty`, select the `wav2lip` model, and start a conversation. If you omit `--web-port`, the default frontend URL is `http://localhost:5173`. The first load initializes the Wav2Lip checkpoint, S3FD face detector, and avatar cache, which may take tens of seconds.
 
 #### 4. Wav2Lip Single-Machine Tuning
 
@@ -392,8 +393,8 @@ If GPU memory is tight or first-frame latency is high, tune these parameters fir
 | Parameter | Recommended default | Purpose |
 | --- | --- | --- |
 | `OPENTALKING_WAV2LIP_DEVICE` | `cuda` | Select the Wav2Lip runtime device; use `cpu` for debugging. |
-| `OPENTALKING_WAV2LIP_BATCH_SIZE` | `4` or `8` | Lower values reduce peak memory; higher values improve throughput. |
-| `OPENTALKING_WAV2LIP_MAX_LONG_EDGE` | `768` | Limit the long edge of input avatars to reduce memory and preprocessing cost. |
+| `OPENTALKING_WAV2LIP_BATCH_SIZE` | `16` | Matches the OmniRT CUDA quickstart default; lower it if GPU memory is tight. |
+| `OPENTALKING_WAV2LIP_MAX_LONG_EDGE` | `832` | Matches the OmniRT CUDA quickstart default and keeps render latency closer to realtime; set `0` only when prioritizing full source resolution over latency. |
 | `OPENTALKING_WAV2LIP_JPEG_QUALITY` | `85` | Output-frame JPEG quality; higher values improve visuals but increase bandwidth. |
 | `OPENTALKING_PREWARM_AVATARS` | `singer` | Prewarm Wav2Lip avatars when the service starts. |
 

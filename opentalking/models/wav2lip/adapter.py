@@ -11,7 +11,10 @@ from PIL import Image, ImageDraw
 
 from opentalking.avatar.loader import load_avatar_bundle
 from opentalking.avatar.mouth_metadata import image_file_sha256
-from opentalking.avatar.wav2lip_config import normalize_wav2lip_postprocess_mode
+from opentalking.avatar.wav2lip_config import (
+    normalize_wav2lip_postprocess_mode,
+    optional_wav2lip_postprocess_mode,
+)
 from opentalking.core.interfaces.avatar_asset import AvatarManifest
 from opentalking.core.types.frames import AudioChunk, VideoFrameData
 from opentalking.media.frame_avatar import (
@@ -273,7 +276,10 @@ def _frame_reference_config(avatar_path: Path, manifest: AvatarManifest) -> dict
     return config
 
 
-def _postprocess_mode(manifest: AvatarManifest) -> str:
+def _postprocess_mode(manifest: AvatarManifest, *, override: str | None = None) -> str:
+    override_mode = optional_wav2lip_postprocess_mode(override)
+    if override_mode is not None:
+        return override_mode
     raw = os.environ.get("OPENTALKING_WAV2LIP_POSTPROCESS_MODE", "easy_improved")
     metadata = _read_manifest_metadata(manifest)
     preferred = metadata.get("preferred_wav2lip_postprocess_mode")
@@ -293,7 +299,13 @@ def _decode_jpeg_sequence(payload: bytes) -> list[np.ndarray]:
     return frames
 
 
-def _build_wav2lip_session(avatar_path: Path, manifest: AvatarManifest, runtime: Any) -> _Wav2LipLocalState:
+def _build_wav2lip_session(
+    avatar_path: Path,
+    manifest: AvatarManifest,
+    runtime: Any,
+    *,
+    postprocess_mode_override: str | None = None,
+) -> _Wav2LipLocalState:
     try:
         from opentalking.models.wav2lip.realtime import RealtimeAvatarService
     except Exception as exc:
@@ -307,7 +319,7 @@ def _build_wav2lip_session(avatar_path: Path, manifest: AvatarManifest, runtime:
     frame_config = _frame_reference_config(avatar_path, manifest)
     config: dict[str, object] = {
         **video_config,
-        "wav2lip_postprocess_mode": _postprocess_mode(manifest),
+        "wav2lip_postprocess_mode": _postprocess_mode(manifest, override=postprocess_mode_override),
         "mouth_metadata": _mouth_metadata(avatar_path, manifest),
     }
     if frame_config.get("reference_mode"):
@@ -375,6 +387,7 @@ class Wav2LipAdapter:
         self._device = "cuda"
         self._runtime: Any | None = None
         self._legacy_fallback = _env_bool("OPENTALKING_WAV2LIP_LEGACY_LOCAL_FALLBACK")
+        self._postprocess_mode_override: str | None = None
 
     @staticmethod
     def runtime_available() -> bool:
@@ -412,6 +425,9 @@ class Wav2LipAdapter:
                 "containing wav2lip384.pth/s3fd.pth, or set OPENTALKING_WAV2LIP_CHECKPOINT explicitly."
             )
 
+    def set_wav2lip_postprocess_mode(self, mode: str | None) -> None:
+        self._postprocess_mode_override = optional_wav2lip_postprocess_mode(mode)
+
     def load_avatar(self, avatar_path: str) -> _Wav2LipLocalState | FrameAvatarState:
         bundle = load_avatar_bundle(Path(avatar_path), strict=False)
         if self._legacy_fallback:
@@ -419,10 +435,33 @@ class Wav2LipAdapter:
         if self._runtime is None:
             self.load_model(self._device)
         assert self._runtime is not None
-        return _build_wav2lip_session(bundle.path, bundle.manifest, self._runtime)
+        return _build_wav2lip_session(
+            bundle.path,
+            bundle.manifest,
+            self._runtime,
+            postprocess_mode_override=self._postprocess_mode_override,
+        )
 
-    def warmup(self) -> None:
-        return None
+    def warmup(self, avatar_state: Any | None = None) -> None:
+        if self._legacy_fallback or not isinstance(avatar_state, _Wav2LipLocalState):
+            return
+        runtime_state = avatar_state.runtime._session_state(avatar_state.session)
+        previous_adapter_frames = avatar_state.emitted_frames
+        previous_runtime_frames = getattr(runtime_state, "emitted_frames", 0)
+        previous_pcm_history = getattr(runtime_state, "pcm_history", None)
+        if isinstance(previous_pcm_history, np.ndarray):
+            previous_pcm_history = previous_pcm_history.copy()
+        sample_rate = int(getattr(avatar_state.session.audio, "sample_rate", 16000) or 16000)
+        samples = max(3200, sample_rate // 4)
+        silence = np.zeros(samples, dtype=np.int16).tobytes()
+        try:
+            avatar_state.runtime.render_chunk(avatar_state.session, silence)
+        finally:
+            avatar_state.emitted_frames = previous_adapter_frames
+            if hasattr(runtime_state, "emitted_frames"):
+                runtime_state.emitted_frames = previous_runtime_frames
+            if hasattr(runtime_state, "pcm_history"):
+                runtime_state.pcm_history = previous_pcm_history
 
     def extract_features(self, audio_chunk: AudioChunk) -> Wav2LipFeatures:
         fps = 25.0

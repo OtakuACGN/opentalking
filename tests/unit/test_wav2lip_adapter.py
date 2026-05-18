@@ -119,6 +119,8 @@ def _install_fake_wav2lip_runtime(monkeypatch) -> type:
     class State:
         def __init__(self, frame):
             self.frame = frame
+            self.emitted_frames = 0
+            self.pcm_history = None
 
         def frame_at(self, _index):
             return Prepared(self.frame)
@@ -134,12 +136,15 @@ def _install_fake_wav2lip_runtime(monkeypatch) -> type:
             self.checkpoint = self.models_dir / "wav2lip384.pth"
             self.sessions = []
             self.rendered = []
+            self.states = {}
             Wav2LipRealtimeRuntime.instances.append(self)
 
         def _session_state(self, session):
             self.sessions.append(session)
-            frame = np.zeros((session.video.height, session.video.width, 3), dtype=np.uint8)
-            return State(frame)
+            if session.session_id not in self.states:
+                frame = np.zeros((session.video.height, session.video.width, 3), dtype=np.uint8)
+                self.states[session.session_id] = State(frame)
+            return self.states[session.session_id]
 
         def render_chunk(self, session, pcm_s16le):
             self.rendered.append((session, pcm_s16le))
@@ -209,6 +214,62 @@ def test_wav2lip_adapter_uses_local_runtime_and_preprocessed_metadata(monkeypatc
     assert frame.width == session.video.width
     assert frame.height == session.video.height
     assert frame.data.shape[:2] == (session.video.height, session.video.width)
+
+
+def test_wav2lip_adapter_keeps_manifest_resolution_by_default(monkeypatch) -> None:
+    fake_runtime = _install_fake_wav2lip_runtime(monkeypatch)
+    models_dir = Path(__file__).resolve().parents[2] / "models" / "wav2lip"
+    monkeypatch.setenv("OPENTALKING_WAV2LIP_MODEL_ROOT", str(models_dir))
+    monkeypatch.delenv("OPENTALKING_WAV2LIP_MAX_LONG_EDGE", raising=False)
+    root = Path(__file__).resolve().parents[2]
+    adapter = Wav2LipAdapter()
+    adapter.load_model("cpu")
+
+    adapter.load_avatar(str(root / "examples" / "avatars" / "singer"))
+
+    session = fake_runtime.instances[-1].sessions[-1]
+    assert session.video.width == 830
+    assert session.video.height == 1108
+
+
+def test_wav2lip_adapter_postprocess_override_wins_over_manifest_and_env(monkeypatch) -> None:
+    fake_runtime = _install_fake_wav2lip_runtime(monkeypatch)
+    models_dir = Path(__file__).resolve().parents[2] / "models" / "wav2lip"
+    monkeypatch.setenv("OPENTALKING_WAV2LIP_MODEL_ROOT", str(models_dir))
+    monkeypatch.setenv("OPENTALKING_WAV2LIP_POSTPROCESS_MODE", "easy_improved")
+    root = Path(__file__).resolve().parents[2]
+    adapter = Wav2LipAdapter()
+    adapter.set_wav2lip_postprocess_mode("basic")
+    adapter.load_model("cpu")
+
+    adapter.load_avatar(str(root / "examples" / "avatars" / "singer"))
+
+    session = fake_runtime.instances[-1].sessions[-1]
+    assert session.wav2lip_postprocess_mode == "basic"
+
+
+def test_wav2lip_adapter_warmup_runs_runtime_forward_and_restores_stream_state(monkeypatch) -> None:
+    fake_runtime = _install_fake_wav2lip_runtime(monkeypatch)
+    models_dir = Path(__file__).resolve().parents[2] / "models" / "wav2lip"
+    monkeypatch.setenv("OPENTALKING_WAV2LIP_MODEL_ROOT", str(models_dir))
+    root = Path(__file__).resolve().parents[2]
+    adapter = Wav2LipAdapter()
+    adapter.load_model("cpu")
+    state = adapter.load_avatar(str(root / "examples" / "avatars" / "anchor"))
+    runtime = fake_runtime.instances[-1]
+    runtime.rendered.clear()
+    state.emitted_frames = 7
+    runtime_state = runtime._session_state(state.session)
+    runtime_state.pcm_history = np.full(12, 99, dtype=np.int16)
+    runtime_state.emitted_frames = 5
+
+    adapter.warmup(state)
+
+    assert len(runtime.rendered) == 1
+    assert np.frombuffer(runtime.rendered[0][1], dtype=np.int16).size >= 3200
+    assert state.emitted_frames == 7
+    assert runtime_state.emitted_frames == 5
+    np.testing.assert_array_equal(runtime_state.pcm_history, np.full(12, 99, dtype=np.int16))
 
 
 def test_wav2lip_adapter_accepts_reference_only_avatar_with_local_runtime(monkeypatch) -> None:

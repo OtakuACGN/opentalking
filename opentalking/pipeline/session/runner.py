@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
+import inspect
 import json
 import logging
 import os
@@ -21,10 +22,14 @@ from av.audio.resampler import AudioResampler
 
 from opentalking.core.session_store import set_session_state
 from opentalking.core.config import Settings, get_settings
+from opentalking.avatar.wav2lip_config import optional_wav2lip_postprocess_mode
 from opentalking.core.types.frames import AudioChunk, VideoFrameData
 from opentalking.models.registry import get_adapter
 from opentalking.providers.rtc.aiortc.adapter import WebRTCSession
 from opentalking.providers.tts import build_tts_adapter
+from opentalking.providers.llm.openai_compatible.adapter import OpenAICompatibleLLMClient
+from opentalking.providers.llm.openai_compatible.conversation import ConversationHistory
+from opentalking.providers.llm.openai_compatible.sentence_splitter import SentenceSplitter
 
 # Local wav2lip runtime was removed (delegated to omnirt). Keep no-op shims so
 # legacy code paths in this runner still import; the real synthesis path goes
@@ -238,6 +243,7 @@ class SessionRunner:
         llm_api_key: str = "",
         llm_model: str = "qwen-turbo",
         llm_system_prompt: str = "",
+        wav2lip_postprocess_mode: str | None = None,
     ) -> None:
         self.session_id = session_id
         self.avatar_id = avatar_id
@@ -247,6 +253,12 @@ class SessionRunner:
         self.device = device
         self._tts_settings = tts_settings or _SETTINGS
         self.adapter = get_adapter(model_type)
+        self._wav2lip_postprocess_mode = optional_wav2lip_postprocess_mode(wav2lip_postprocess_mode)
+        if self.model_type == "wav2lip" and self._wav2lip_postprocess_mode is not None:
+            set_postprocess_mode = getattr(self.adapter, "set_wav2lip_postprocess_mode", None)
+            if callable(set_postprocess_mode):
+                set_postprocess_mode(self._wav2lip_postprocess_mode)
+
         self.avatar_state: Any = None
         self.webrtc: WebRTCSession | None = None
         self.ready_event = asyncio.Event()
@@ -266,6 +278,7 @@ class SessionRunner:
         self._render_chunk_audio_events: dict[int, asyncio.Event] = {}
         self._speaking = False
         self._speech_started = False
+        self._speech_media_started = False
         self._closed = False
         self._idle_task: asyncio.Task[None] | None = None
         self._rtc_sample_rate = int(os.environ.get("OPENTALKING_RTC_SAMPLE_RATE") or "0")
@@ -430,7 +443,16 @@ class SessionRunner:
     def _prepare_avatar_sync(self) -> Any:
         self.adapter.load_model(self.device)
         avatar_state = self.adapter.load_avatar(str(self.avatar_path()))
-        self.adapter.warmup()
+        warmup = getattr(self.adapter, "warmup", None)
+        if callable(warmup):
+            try:
+                parameters = inspect.signature(warmup).parameters
+            except (TypeError, ValueError):
+                parameters = {}
+            if parameters:
+                warmup(avatar_state)
+            else:
+                warmup()
         return avatar_state
 
     async def prepare(self) -> None:
@@ -588,10 +610,22 @@ class SessionRunner:
             if not self._closed:
                 await set_session_state(self.redis, self.session_id, "error")
 
+    async def _publish_speech_media_started(self) -> None:
+        if not self._speech_started or self._speech_media_started or self._closed:
+            return
+        self._speech_media_started = True
+        await publish_event(
+            self.redis,
+            self.session_id,
+            "speech.media_started",
+            {"session_id": self.session_id},
+        )
+
     async def _video_sink(self, frame: VideoFrameData) -> None:
         if self.webrtc:
             self._last_speech_frame = frame
             await self.webrtc.video.put(frame)
+            await self._publish_speech_media_started()
 
     async def _audio_sink(self, pcm: Any, sample_rate: int) -> None:
         if not self.webrtc:
@@ -607,6 +641,7 @@ class SessionRunner:
             )
         if arr.size > 0:
             await self.webrtc.audio.put_pcm(arr)
+            await self._publish_speech_media_started()
 
     def _maybe_delay_quicktalk_audio(
         self,
@@ -632,6 +667,7 @@ class SessionRunner:
         if not self._speech_started:
             return
         self._speech_started = False
+        self._speech_media_started = False
         await publish_event(
             self.redis,
             self.session_id,
@@ -1319,6 +1355,7 @@ class SessionRunner:
                     {"session_id": self.session_id, "text": speech_text},
                 )
                 self._speech_started = True
+                self._speech_media_started = False
                 await publish_event(
                     self.redis,
                     self.session_id,
@@ -1598,6 +1635,7 @@ class SessionRunner:
                     {"session_id": self.session_id, "text": prompt_text},
                 )
                 self._speech_started = True
+                self._speech_media_started = False
 
                 debug_capture = self._build_debug_capture(prompt_text)
                 tts = build_tts_adapter(

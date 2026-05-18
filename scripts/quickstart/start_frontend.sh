@@ -4,12 +4,11 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/../.." && pwd)"
 default_home="$(cd -- "$repo_root/.." && pwd)"
+# shellcheck disable=SC1091
+source "$script_dir/_helpers.sh"
 
 env_file="${OPENTALKING_QUICKSTART_ENV:-$script_dir/env}"
-if [[ -f "$env_file" ]]; then
-  # shellcheck disable=SC1090
-  source "$env_file"
-fi
+quickstart_source_env "$env_file"
 
 usage() {
   cat <<'USAGE'

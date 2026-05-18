@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import apps.unified.main as unified_main
 import pytest
 
 from opentalking.avatar.wav2lip_preload import collect_wav2lip_preload_payloads, preload_wav2lip_assets
@@ -184,3 +185,10 @@ async def test_preload_wav2lip_assets_retries_when_omnirt_is_not_ready(tmp_path:
 
     assert attempts == 2
     assert sleeps == [0.25]
+
+
+def test_unified_preload_only_targets_omnirt_wav2lip_backend() -> None:
+    source = Path(unified_main.__file__).read_text(encoding="utf-8")
+
+    assert "resolve_model_backend(\"wav2lip\", settings).backend" in source
+    assert "== \"omnirt\"" in source

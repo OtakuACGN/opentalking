@@ -67,7 +67,7 @@ def _flatten_config(raw: dict[str, Any] | None) -> dict[str, Any]:
             "elevenlabs_voice_id": "tts_elevenlabs_voice_id",
             "elevenlabs_output_format": "tts_elevenlabs_output_format",
         },
-        "model": {"torch_device": "torch_device"},
+        "model": {"torch_device": "torch_device", "default_model": "default_model"},
     }
 
     for key, value in raw.items():
@@ -284,6 +284,7 @@ class Settings(BaseSettings):
 
     torch_device: str = "cpu"
     default_fps: int = 25
+    default_model: str = ""
 
     # ---- OmniRT inference runtime ----
     # When OMNIRT_ENDPOINT is set, OpenTalking derives per-model WS URLs from

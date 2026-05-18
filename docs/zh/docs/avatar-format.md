@@ -74,8 +74,9 @@ wav2lip avatar 的 `metadata` 应包含嘴部定位信息：
 
 坐标采用图像尺寸归一化。通过 `/avatars/custom` 上传单图 wav2lip avatar 时，OpenTalking
 本地使用 MediaPipe 完成嘴部检测；检测失败时上传仍会成功但缺失 `animation` 字段，此时
-OmniRT wav2lip 后端回退至内置对齐逻辑。`wav2lip_postprocess_mode` 控制服务端是否启用
-后处理，默认关闭。
+OmniRT wav2lip 后端回退至内置对齐逻辑。`wav2lip_postprocess_mode` 控制服务端后处理模式。
+OpenTalking local Wav2Lip 默认使用 `easy_improved`；`easy_enhanced` 保留为后端/API 可用模式，
+但需要安装 GFPGAN 依赖并准备对应 checkpoint。
 
 ## QuickTalk manifest 示例
 

@@ -62,6 +62,53 @@ def test_models_route_lists_all_models_with_connection_status_without_omnirt(mon
     assert statuses["quicktalk"]["reason"] == "not_configured"
 
 
+def test_models_route_exposes_valid_default_model_from_settings(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "opentalking.models.wav2lip.adapter.Wav2LipAdapter.runtime_available",
+        staticmethod(lambda: False),
+    )
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(
+        default_model="quicktalk",
+        omnirt_endpoint="",
+        flashtalk_ws_url="",
+        flashhead_ws_url="",
+    )
+    app.include_router(models_routes.router)
+
+    with TestClient(app) as client:
+        response = client.get("/models")
+
+    assert response.status_code == 200
+    assert response.json()["default_model"] == "quicktalk"
+
+
+def test_settings_loads_default_model_from_environment(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OPENTALKING_DEFAULT_MODEL", "quicktalk")
+    monkeypatch.delenv("OPENTALKING_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("CONFIG_FILE", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.default_model == "quicktalk"
+
+
+def test_settings_loads_default_model_from_yaml_model_section(monkeypatch, tmp_path) -> None:
+    config_file = tmp_path / "opentalking.yaml"
+    config_file.write_text(
+        "model:\n  default_model: quicktalk\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENTALKING_CONFIG_FILE", str(config_file))
+    monkeypatch.delenv("OPENTALKING_DEFAULT_MODEL", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.default_model == "quicktalk"
+
+
 def test_models_route_marks_legacy_flashtalk_connected_when_explicitly_configured() -> None:
     app = FastAPI()
     app.state.settings = SimpleNamespace(

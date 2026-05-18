@@ -55,14 +55,17 @@ stat models/wav2lip/s3fd.pth
 ```bash
 export OPENTALKING_WAV2LIP_MODEL_ROOT="$DIGITAL_HUMAN_HOME/opentalking/models/wav2lip"
 export OPENTALKING_WAV2LIP_DEVICE=cuda
-export OPENTALKING_WAV2LIP_BATCH_SIZE=4
-export OPENTALKING_WAV2LIP_MAX_LONG_EDGE=768
+export OPENTALKING_WAV2LIP_BATCH_SIZE=16
+export OPENTALKING_WAV2LIP_MAX_LONG_EDGE=832
+export OPENTALKING_WAV2LIP_FACE_DET_DEVICE=cpu
 
 cd "$DIGITAL_HUMAN_HOME/opentalking"
 bash scripts/start_unified.sh --backend local --model wav2lip --api-port 8210 --web-port 5280
 ```
 
-打开 `http://localhost:5173`，选择内置 Wav2Lip 形象（例如 `singer`、`office-woman`、`ancient-beauty`）和 `wav2lip` 模型，然后开始对话。首次加载会初始化 Wav2Lip checkpoint、S3FD 人脸检测器和形象缓存，可能需要几十秒。
+打开 `http://localhost:5280`，选择内置 Wav2Lip 形象（例如 `singer`、`office-woman`、`ancient-beauty`）和 `wav2lip` 模型，然后开始对话。若不指定 `--web-port`，默认前端地址为 `http://localhost:5173`。首次加载会初始化 Wav2Lip checkpoint、S3FD 人脸检测器和形象缓存，可能需要几十秒。
+
+local Wav2Lip 默认使用 `easy_improved` 后处理。前端提供 `auto`、`basic`、`opentalking_improved`、`easy_improved` 四个普通选项；后端仍接受 `easy_enhanced` 用于 API/env 测试，但该模式需要安装 GFPGAN 并通过 `OPENTALKING_WAV2LIP_GFPGAN_CHECKPOINT` 指向 checkpoint。
 
 #### 4. Wav2Lip 单机调优
 
@@ -71,7 +74,7 @@ bash scripts/start_unified.sh --backend local --model wav2lip --api-port 8210 --
 | 参数 | 默认建议 | 作用 |
 | --- | --- | --- |
 | `OPENTALKING_WAV2LIP_DEVICE` | `cuda` | 指定 Wav2Lip runtime 设备；调试时可设 `cpu` |
-| `OPENTALKING_WAV2LIP_BATCH_SIZE` | `4` 或 `8` | 降低可减少显存峰值，提高可提升吞吐 |
-| `OPENTALKING_WAV2LIP_MAX_LONG_EDGE` | `768` | 限制输入形象长边，降低显存和预处理开销 |
+| `OPENTALKING_WAV2LIP_BATCH_SIZE` | `16` | 与 OmniRT CUDA quickstart 默认值一致；显存紧张时再调低 |
+| `OPENTALKING_WAV2LIP_MAX_LONG_EDGE` | `832` | 与 OmniRT CUDA quickstart 默认值一致，让渲染延迟更接近实时；只有优先保留原始分辨率时才设 `0` |
 | `OPENTALKING_WAV2LIP_JPEG_QUALITY` | `85` | 输出帧 JPEG 质量，越高画面越好但带宽更大 |
 | `OPENTALKING_PREWARM_AVATARS` | `singer` | 服务启动时提前预热 Wav2Lip 形象 |

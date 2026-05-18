@@ -296,7 +296,7 @@ cd "$DIGITAL_HUMAN_HOME/opentalking"
 bash scripts/start_unified.sh --backend local --model quicktalk --api-port 8210 --web-port 5280
 ```
 
-打开 `http://localhost:5173`，选择 `QuickTalk Local` 形象和 `quicktalk` 模型。首次启动会构建 face cache 和 worker，可能需要几十秒；后续会复用缓存。
+打开 `http://localhost:5280`，选择 `QuickTalk Local` 形象和 `quicktalk` 模型。若不指定 `--web-port`，默认前端地址是 `http://localhost:5173`。首次启动会构建 face cache 和 worker，可能需要几十秒；后续会复用缓存。
 
 #### 4. 上传自己的数字人形象
 

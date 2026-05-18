@@ -73,6 +73,134 @@ class UploadedPcmRunner(StubRunner):
         return task
 
 
+class ChatCapableRunner(StubRunner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.chat_calls: list[dict[str, object]] = []
+
+    def create_chat_task(
+        self,
+        prompt: str,
+        tts_voice: str | None = None,
+        **kwargs: object,
+    ) -> asyncio.Task[None]:
+        async def _chat() -> None:
+            self.chat_calls.append({"prompt": prompt, "tts_voice": tts_voice, **kwargs})
+
+        task = asyncio.create_task(_chat())
+        self.speech_tasks.add(task)
+        task.add_done_callback(self.speech_tasks.discard)
+        return task
+
+
+def test_create_runner_passes_wav2lip_postprocess_mode_to_local_session_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeSessionRunner:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(task_consumer, "SessionRunner", FakeSessionRunner)
+    monkeypatch.setattr(
+        task_consumer,
+        "resolve_model_backend",
+        lambda *_args, **_kwargs: type("Backend", (), {"backend": "local"})(),
+    )
+
+    runner = task_consumer._create_runner(
+        {
+            "session_id": "sess_wav2lip",
+            "avatar_id": "singer",
+            "model": "wav2lip",
+            "wav2lip_postprocess_mode": "basic",
+        },
+        InMemoryRedis(),
+        Path("examples/avatars"),
+        "cpu",
+    )
+
+    assert isinstance(runner, FakeSessionRunner)
+    assert captured["wav2lip_postprocess_mode"] == "basic"
+
+
+def test_session_runner_configures_wav2lip_adapter_postprocess_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeAdapter:
+        mode: str | None = None
+
+        def set_wav2lip_postprocess_mode(self, mode: str | None) -> None:
+            self.mode = mode
+
+    adapter = FakeAdapter()
+    monkeypatch.setattr("opentalking.pipeline.session.runner.get_adapter", lambda _model: adapter)
+
+    runner = SessionRunner(
+        session_id="sess_wav2lip",
+        avatar_id="singer",
+        model_type="wav2lip",
+        avatars_root=Path("examples/avatars"),
+        redis=InMemoryRedis(),
+        wav2lip_postprocess_mode="basic",
+    )
+
+    assert runner.adapter is adapter
+    assert adapter.mode == "basic"
+
+
+def test_session_runner_prepare_passes_avatar_state_to_adapter_warmup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeManifest:
+        fps = 25
+        sample_rate = 16000
+
+    class FakeAdapter:
+        warmed_state: object | None = None
+
+        def load_model(self, device: str) -> None:
+            self.device = device
+
+        def load_avatar(self, avatar_path: str) -> object:
+            self.avatar_path = avatar_path
+            return type("FakeState", (), {"manifest": FakeManifest()})()
+
+        def warmup(self, avatar_state: object | None = None) -> None:
+            self.warmed_state = avatar_state
+
+        def idle_frame(self, avatar_state: object, frame_idx: int) -> object:
+            raise AssertionError("idle cache is disabled in this test")
+
+    class FakeWebRTCSession:
+        def __init__(self, *, fps: float, sample_rate: int, mode: str) -> None:
+            self.fps = fps
+            self.sample_rate = sample_rate
+            self.mode = mode
+
+    adapter = FakeAdapter()
+    monkeypatch.setattr("opentalking.pipeline.session.runner.get_adapter", lambda _model: adapter)
+    monkeypatch.setattr("opentalking.pipeline.session.runner.WebRTCSession", FakeWebRTCSession)
+    monkeypatch.setenv("OPENTALKING_TTS_PREWARM_ON_PREPARE", "0")
+    monkeypatch.setenv("OPENTALKING_IDLE_CACHE_FRAMES", "0")
+
+    runner = SessionRunner(
+        session_id="sess_warmup",
+        avatar_id="singer",
+        model_type="wav2lip",
+        avatars_root=Path("examples/avatars"),
+        redis=InMemoryRedis(),
+    )
+
+    async def run() -> None:
+        await runner.prepare()
+
+    asyncio.run(run())
+
+    assert adapter.warmed_state is runner.avatar_state
+
+
 def test_session_runner_create_speak_task_accepts_tts_overrides() -> None:
     runner = object.__new__(SessionRunner)
     runner.speech_tasks = set()
@@ -116,6 +244,64 @@ def test_session_runner_create_speak_task_accepts_tts_overrides() -> None:
         "tts_model": "qwen3-tts-flash-realtime",
         "enqueue_unix": 123.0,
     }
+
+
+def test_session_runner_llm_helpers_import_provider_dependencies() -> None:
+    runner = object.__new__(SessionRunner)
+    runner._llm_client = None
+    runner._llm_base_url = "https://llm.example/v1"
+    runner._llm_api_key = "test-key"
+    runner._llm_model = "test-model"
+    runner._conversation = None
+    runner._llm_system_prompt = "system prompt"
+
+    client = runner._ensure_llm_client()
+    conversation = runner._ensure_conversation()
+
+    assert client.base_url == "https://llm.example/v1"
+    assert client.api_key == "test-key"
+    assert client.model == "test-model"
+    assert conversation.get_messages()[0]["content"].startswith("system prompt")
+
+
+@pytest.mark.asyncio
+async def test_handle_worker_task_routes_text_speak_through_chat_when_available() -> None:
+    sid = "sess_local_chat"
+    redis = InMemoryRedis()
+    await redis.hset(
+        session_key(sid),
+        mapping={"session_id": sid, "state": "ready", "model": "wav2lip"},
+    )
+    runner = ChatCapableRunner()
+    await runner.prepare()
+
+    await handle_worker_task(
+        {
+            "cmd": "speak",
+            "session_id": sid,
+            "text": "你好",
+            "tts_voice": "Cherry",
+            "tts_provider": "dashscope",
+            "tts_model": "qwen3-tts-flash-realtime",
+            "enqueue_unix": 123.0,
+        },
+        redis,
+        Path("."),
+        "cpu",
+        {sid: runner},
+    )
+    await asyncio.sleep(0)
+
+    assert runner.spoken == []
+    assert runner.chat_calls == [
+        {
+            "prompt": "你好",
+            "tts_voice": "Cherry",
+            "tts_provider": "dashscope",
+            "tts_model": "qwen3-tts-flash-realtime",
+            "enqueue_unix": 123.0,
+        }
+    ]
 
 
 def test_speak_flashtalk_uploaded_pcm_queues_redis_pcm_key() -> None:

@@ -15,25 +15,30 @@
 
 ## 权重下载
 
-QuickTalk 资产由本地 adapter 使用，OpenTalking 不托管权重下载入口。准备包含 `hdModule`
-的资产包，并在配置或 avatar manifest 中指向它。
+QuickTalk local adapter 直接在 OpenTalking 进程内加载权重，不需要 OmniRT。权重、HuBERT、InsightFace 依赖和缓存建议放在仓库根目录 `models/quicktalk/`。
 
 ## 目录结构
 
 ```text
-$OMNIRT_MODEL_ROOT/quicktalk/hdModule/
-└── checkpoints/
-    ├── 256.onnx
-    ├── repair.npy
-    ├── chinese-hubert-large/
-    └── auxiliary_min/ 或 auxiliary/
+models/
+  quicktalk/
+    checkpoints/
+      quicktalk.pth 或 256.onnx
+      repair.npy
+      chinese-hubert-large/
+        pytorch_model.bin
+      auxiliary/models/buffalo_l/ 或 auxiliary_min/
+        det_10g.onnx
 ```
+
+如果已有旧资产包以 `hdModule/checkpoints/` 组织，也可以把 `OPENTALKING_QUICKTALK_ASSET_ROOT` 指向 `hdModule` 的父目录或 `hdModule` 本身，adapter 会自动归一化到实际包含 `checkpoints/` 的目录。
 
 ## 配置项
 
 ```env title=".env"
-OPENTALKING_QUICKTALK_ASSET_ROOT=/absolute/path/to/models/quicktalk/hdModule
-OPENTALKING_QUICKTALK_TEMPLATE_VIDEO=/absolute/path/to/template.mp4
+OPENTALKING_QUICKTALK_ASSET_ROOT=/absolute/path/to/opentalking/models/quicktalk
+# 可选：内置 QuickTalk avatar 已在 manifest 中声明 template_video；自定义 avatar 可用该变量覆盖。
+# OPENTALKING_QUICKTALK_TEMPLATE_VIDEO=/absolute/path/to/template.mp4
 OPENTALKING_QUICKTALK_WORKER_CACHE=1
 OPENTALKING_TORCH_DEVICE=cuda:0
 ```
@@ -44,7 +49,7 @@ Avatar manifest 也应声明：
 {
   "model_type": "quicktalk",
   "metadata": {
-    "asset_root": "/absolute/path/to/models/quicktalk/hdModule",
+    "asset_root": "/absolute/path/to/opentalking/models/quicktalk",
     "template_video": "/absolute/path/to/template.mp4"
   }
 }
@@ -53,13 +58,20 @@ Avatar manifest 也应声明：
 ## 启动命令
 
 ```bash title="终端"
-OPENTALKING_QUICKTALK_BACKEND=local bash scripts/quickstart/start_all.sh
+export OPENTALKING_TORCH_DEVICE=cuda:0
+export OPENTALKING_QUICKTALK_ASSET_ROOT="$DIGITAL_HUMAN_HOME/opentalking/models/quicktalk"
+export OPENTALKING_QUICKTALK_WORKER_CACHE=1
+
+cd "$DIGITAL_HUMAN_HOME/opentalking"
+bash scripts/start_unified.sh --backend local --model quicktalk --api-port 8210 --web-port 5280
 ```
+
+打开 `http://localhost:5280`，选择 `QuickTalk Local` 形象和 `quicktalk` 模型。若不指定 `--web-port`，默认前端地址为 `http://localhost:5173`。
 
 ## `/models` 验证
 
 ```bash title="终端"
-curl -s http://127.0.0.1:8000/models | jq '.statuses[] | select(.id=="quicktalk")'
+curl -s http://127.0.0.1:8210/models | jq '.statuses[] | select(.id=="quicktalk")'
 ```
 
 期望：

@@ -3,6 +3,8 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 quickstart_dir="$script_dir/quickstart"
+# shellcheck disable=SC1091
+source "$quickstart_dir/_helpers.sh"
 
 usage() {
   cat <<'USAGE'
@@ -128,7 +130,10 @@ if [[ -n "$env_file" ]]; then
     exit 2
   fi
   export OPENTALKING_QUICKSTART_ENV="$env_file"
+else
+  env_file="${OPENTALKING_QUICKSTART_ENV:-$quickstart_dir/env}"
 fi
+quickstart_source_env "$env_file"
 
 start_args=()
 web_args=()

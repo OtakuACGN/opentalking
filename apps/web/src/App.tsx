@@ -293,11 +293,13 @@ function pickInitialModel(
   registeredModels: string[],
   statuses: ModelStatus[],
   initialAvatar: AvatarSummary | null,
+  defaultModel?: string | null,
 ): string {
   const available = new Set(registeredModels);
   const connected = new Set(
     statuses.filter((status) => modelConnectionBadge(status).connected).map((status) => status.id),
   );
+  if (defaultModel && available.has(defaultModel) && connected.has(defaultModel)) return defaultModel;
   if (available.has(currentModel) && connected.has(currentModel)) return currentModel;
   const avatarModel = initialAvatar?.model_type;
   if (avatarModel && available.has(avatarModel) && connected.has(avatarModel)) return avatarModel;
@@ -383,6 +385,15 @@ export default function App() {
   const flushSubtitleDisplay = useCallback(() => {
     const t = subtitleAccRef.current;
     if (t) setCurrentSubtitle(t);
+  }, []);
+
+  const flushSubtitleMessage = useCallback(() => {
+    const msgId = streamingAssistantMsgIdRef.current;
+    const t = subtitleAccRef.current;
+    if (!msgId || !t) return;
+    setMessages((prev) =>
+      prev.map((m) => (m.id === msgId ? { ...m, text: t } : m)),
+    );
   }, []);
 
   // UI
@@ -694,7 +705,7 @@ export default function App() {
       try {
         const [av, mo] = await Promise.all([
           apiGet<AvatarSummary[]>("/avatars"),
-          apiGet<{ models: string[]; statuses?: ModelStatus[] }>("/models"),
+          apiGet<{ models: string[]; statuses?: ModelStatus[]; default_model?: string | null }>("/models"),
           loadVoices(),
         ]);
         setAvatars(av);
@@ -704,7 +715,7 @@ export default function App() {
         const initialAvatar = pickInitialAvatar(av, mo.models);
         if (initialAvatar) {
           setAvatarId(initialAvatar.id);
-          setModel((prev) => pickInitialModel(prev, mo.models, statuses, initialAvatar));
+          setModel((prev) => pickInitialModel(prev, mo.models, statuses, initialAvatar, mo.default_model));
         }
       } catch {
         setConnection("error");
@@ -816,17 +827,15 @@ export default function App() {
         subtitleMediaReadyRef.current = true;
         clearSubtitleFallbackTimer();
         flushSubtitleDisplay();
+        flushSubtitleMessage();
       }
       if (ev === "subtitle.chunk" && data && typeof data === "object") {
         const t = (data as { text?: string }).text;
         if (!t) return;
-        const msgId = streamingAssistantMsgIdRef.current;
         subtitleAccRef.current += t;
-        if (msgId) {
-          const next = subtitleAccRef.current;
-          setMessages((prev) =>
-            prev.map((m) => (m.id === msgId ? { ...m, text: next } : m)),
-          );
+        if (subtitleMediaReadyRef.current) {
+          flushSubtitleDisplay();
+          flushSubtitleMessage();
         }
       }
       if (ev === "speech.ended") {
@@ -857,7 +866,7 @@ export default function App() {
       }
     });
     return stop;
-  }, [clearSubtitleFallbackTimer, flushSubtitleDisplay, sessionId]);
+  }, [clearSubtitleFallbackTimer, flushSubtitleDisplay, flushSubtitleMessage, sessionId]);
 
   // Resolves when FlashTalk slot is acquired (session.queued position=0)
   const slotAcquiredRef = useRef<(() => void) | null>(null);
