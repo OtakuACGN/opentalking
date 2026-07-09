@@ -85,6 +85,83 @@ def test_create_custom_avatar_adds_listed_asset_with_preview(tmp_path):
     assert preview.headers["content-type"] == "image/png"
 
 
+def test_create_custom_avatar_persists_selected_person_mode(tmp_path: Path) -> None:
+    base = tmp_path / "base-avatar"
+    base.mkdir()
+    (base / "preview.png").write_bytes(_png_bytes())
+    (base / "reference.png").write_bytes(_png_bytes())
+    (base / "manifest.json").write_text(
+        json.dumps(
+            {
+                "id": "base-avatar",
+                "name": "Base Avatar",
+                "model_type": "quicktalk",
+                "fps": 25,
+                "sample_rate": 16000,
+                "width": 416,
+                "height": 704,
+                "version": "1.0",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(avatars_dir=str(tmp_path))
+    app.include_router(avatars.router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/avatars/custom",
+        data={"base_avatar_id": "base-avatar", "name": "双人上传素材", "model": "quicktalk", "person_mode": "double"},
+        files={"image": ("avatar.png", _png_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 200
+    created = response.json()
+    assert created["person_mode"] == "double"
+    manifest = json.loads((tmp_path / created["id"] / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["metadata"]["person_mode"] == "double"
+    assert manifest["metadata"]["duo_dialog"]["speaker_faces"] == {"left": "left", "right": "right"}
+
+
+def test_update_avatar_person_mode_writes_only_person_mode(tmp_path: Path) -> None:
+    avatar_dir = tmp_path / "anchor"
+    avatar_dir.mkdir()
+    (avatar_dir / "preview.png").write_bytes(_png_bytes())
+    (avatar_dir / "reference.png").write_bytes(_png_bytes())
+    (avatar_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "id": "anchor",
+                "name": "Anchor",
+                "model_type": "quicktalk",
+                "fps": 25,
+                "sample_rate": 16000,
+                "width": 64,
+                "height": 48,
+                "version": "1.0",
+                "metadata": {"source_image": "source/source.png", "person_mode": "single"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(avatars_dir=str(tmp_path))
+    app.include_router(avatars.router)
+    client = TestClient(app)
+
+    response = client.patch("/avatars/anchor/person-mode", json={"person_mode": "double"})
+
+    assert response.status_code == 200
+    assert response.json()["person_mode"] == "double"
+    manifest = json.loads((avatar_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["metadata"]["source_image"] == "source/source.png"
+    assert manifest["metadata"]["person_mode"] == "double"
+    assert manifest["metadata"]["duo_dialog"]["speaker_faces"] == {"left": "left", "right": "right"}
+
+
 def test_avatar_summary_includes_matting_status(tmp_path: Path) -> None:
     root = tmp_path
     avatar_dir = root / "anchor"
@@ -115,6 +192,201 @@ def test_avatar_summary_includes_matting_status(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.json()[0]["matting_status"] == "transparent_ready"
+
+
+def test_avatar_summary_defaults_missing_person_mode_to_single(tmp_path: Path) -> None:
+    root = tmp_path
+    avatar_dir = root / "anchor"
+    avatar_dir.mkdir()
+    (avatar_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "id": "anchor",
+                "name": "Anchor",
+                "model_type": "flashtalk",
+                "fps": 25,
+                "sample_rate": 16000,
+                "width": 1,
+                "height": 1,
+                "version": "1.0",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (avatar_dir / "preview.png").write_bytes(_png_bytes())
+    (avatar_dir / "reference.png").write_bytes(_png_bytes())
+
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(avatars_dir=str(root))
+    app.include_router(avatars.router)
+    response = TestClient(app).get("/avatars")
+
+    assert response.status_code == 200
+    assert response.json()[0]["person_mode"] == "single"
+
+
+def test_avatar_summary_exposes_duo_dialog_metadata_only_when_declared(tmp_path: Path) -> None:
+    duo_dir = tmp_path / "duo-anchor"
+    plain_dir = tmp_path / "plain-anchor"
+    for avatar_dir, metadata in (
+        (
+            duo_dir,
+            {
+                "duo_dialog": {
+                    "speaker_faces": {"male": "left", "female": "right"},
+                    "default_voices": {
+                        "male": "zh-CN-YunxiNeural",
+                        "female": "zh-CN-XiaoxiaoNeural",
+                    },
+                }
+            },
+        ),
+        (plain_dir, {}),
+    ):
+        avatar_dir.mkdir()
+        (avatar_dir / "preview.png").write_bytes(_png_bytes())
+        (avatar_dir / "reference.png").write_bytes(_png_bytes())
+        (avatar_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "id": avatar_dir.name,
+                    "name": avatar_dir.name,
+                    "model_type": "quicktalk",
+                    "fps": 25,
+                    "sample_rate": 16000,
+                    "width": 64,
+                    "height": 48,
+                    "version": "1.0",
+                    "metadata": metadata,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(avatars_dir=str(tmp_path))
+    app.include_router(avatars.router)
+    response = TestClient(app).get("/avatars")
+
+    assert response.status_code == 200
+    by_id = {item["id"]: item for item in response.json()}
+    assert by_id["duo-anchor"]["person_mode"] == "double"
+    assert by_id["plain-anchor"]["person_mode"] == "single"
+    assert by_id["duo-anchor"]["duo_dialog"] == {
+        "speaker_faces": {"male": "left", "female": "right"},
+        "default_voices": {
+            "male": "zh-CN-YunxiNeural",
+            "female": "zh-CN-XiaoxiaoNeural",
+        },
+    }
+    assert by_id["plain-anchor"]["duo_dialog"] is None
+
+
+def test_avatar_summary_orders_numbered_duo_dialog_assets_together(tmp_path: Path) -> None:
+    def write_avatar(dirname: str, name: str, *, duo: bool) -> None:
+        avatar_dir = tmp_path / dirname
+        avatar_dir.mkdir()
+        (avatar_dir / "preview.png").write_bytes(_png_bytes())
+        (avatar_dir / "reference.png").write_bytes(_png_bytes())
+        metadata = {}
+        if duo:
+            metadata["duo_dialog"] = {
+                "speaker_faces": {"female": "left", "male": "right"},
+                "default_voices": {
+                    "female": "zh-CN-XiaoxiaoNeural",
+                    "male": "zh-CN-YunxiNeural",
+                },
+            }
+        (avatar_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "id": dirname,
+                    "name": name,
+                    "model_type": "quicktalk" if duo else "flashtalk",
+                    "fps": 25,
+                    "sample_rate": 16000,
+                    "width": 64,
+                    "height": 48,
+                    "version": "1.0",
+                    "metadata": metadata,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    write_avatar("a-duo-1", "双人对话1", duo=True)
+    write_avatar("b-plain", "普通素材", duo=False)
+    write_avatar("c-duo-3", "双人对话3", duo=True)
+    write_avatar("d-duo-2", "双人对话2", duo=True)
+
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(avatars_dir=str(tmp_path))
+    app.include_router(avatars.router)
+    response = TestClient(app).get("/avatars")
+
+    assert response.status_code == 200
+    assert [item["name"] for item in response.json()] == [
+        "双人对话1",
+        "双人对话2",
+        "双人对话3",
+        "普通素材",
+    ]
+
+
+def test_avatar_summary_groups_renamed_duo_dialog_assets_together(tmp_path: Path) -> None:
+    def write_avatar(dirname: str, name: str, *, duo: bool) -> None:
+        avatar_dir = tmp_path / dirname
+        avatar_dir.mkdir()
+        (avatar_dir / "preview.png").write_bytes(_png_bytes())
+        (avatar_dir / "reference.png").write_bytes(_png_bytes())
+        metadata = {"person_mode": "single"}
+        if duo:
+            metadata = {
+                "person_mode": "double",
+                "duo_dialog": {
+                    "speaker_faces": {"female": "left", "male": "right"},
+                    "default_voices": {
+                        "female": "zh-CN-XiaoxiaoNeural",
+                        "male": "zh-CN-YunxiNeural",
+                    },
+                },
+            }
+        (avatar_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "id": dirname,
+                    "name": name,
+                    "model_type": "quicktalk" if duo else "flashtalk",
+                    "fps": 25,
+                    "sample_rate": 16000,
+                    "width": 64,
+                    "height": 48,
+                    "version": "1.0",
+                    "metadata": metadata,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    write_avatar("a-single", "主播", duo=False)
+    write_avatar("b-video-call", "视频通话", duo=True)
+    write_avatar("c-news-duo", "新闻双人主播", duo=True)
+    write_avatar("d-single", "女主持", duo=False)
+    write_avatar("e-hd-news-duo", "访谈双人主播", duo=True)
+
+    app = FastAPI()
+    app.state.settings = SimpleNamespace(avatars_dir=str(tmp_path))
+    app.include_router(avatars.router)
+    response = TestClient(app).get("/avatars")
+
+    assert response.status_code == 200
+    assert [item["name"] for item in response.json()] == [
+        "主播",
+        "视频通话",
+        "新闻双人主播",
+        "访谈双人主播",
+        "女主持",
+    ]
 
 
 def test_builtin_female_host_transparent_avatar_asset_is_ready() -> None:

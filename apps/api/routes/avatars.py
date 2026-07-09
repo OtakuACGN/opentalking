@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse
 from PIL import Image
 
 from opentalking.avatar import mouth_metadata
+from opentalking.avatar.duo_dialog import duo_dialog_summary_from_metadata
 from opentalking.avatar.loader import load_avatar_bundle
 from opentalking.avatar.matting import MattingError, image_has_transparency, remove_avatar_background
 from opentalking.avatar.validator import list_avatar_dirs
@@ -28,7 +29,7 @@ from opentalking.core.model_paths import quicktalk_asset_root
 from opentalking.models.registry import get_adapter
 from opentalking.providers.synthesis.backends import resolve_model_backend
 from opentalking.providers.synthesis.omnirt import auth_headers
-from apps.api.schemas.avatar import AvatarSummary
+from apps.api.schemas.avatar import AvatarPersonModeUpdate, AvatarSummary, DuoDialogCapability, PersonMode
 from apps.cli.prepare_cache import (
     PreparedAssetResult,
     _prepare_quicktalk_asset,
@@ -69,6 +70,41 @@ def _avatar_matting_status(manifest_path: Path) -> str:
         return "unknown"
     value = str((raw.get("metadata") or {}).get("matting_status") or "").strip()
     return value if value in {"unknown", "opaque", "transparent_ready"} else "unknown"
+
+
+def _normalize_person_mode(raw: object) -> PersonMode | None:
+    value = str(raw or "").strip().lower()
+    if value == "single":
+        return "single"
+    if value == "double":
+        return "double"
+    return None
+
+
+def _person_mode_from_metadata(metadata: object) -> PersonMode:
+    if not isinstance(metadata, dict):
+        return "single"
+    explicit = _normalize_person_mode(metadata.get("person_mode"))
+    if explicit is not None:
+        return explicit
+    return "double" if duo_dialog_summary_from_metadata(metadata) is not None else "single"
+
+
+def _apply_person_mode_metadata(metadata: dict[str, Any], person_mode: PersonMode) -> dict[str, Any]:
+    out = dict(metadata)
+    out["person_mode"] = person_mode
+    if person_mode == "double":
+        duo_dialog = out.get("duo_dialog")
+        if not isinstance(duo_dialog, dict):
+            duo_dialog = {}
+        speaker_faces = duo_dialog.get("speaker_faces")
+        if not isinstance(speaker_faces, dict) or not speaker_faces:
+            duo_dialog["speaker_faces"] = {"left": "left", "right": "right"}
+        default_voices = duo_dialog.get("default_voices")
+        if not isinstance(default_voices, dict):
+            duo_dialog["default_voices"] = {}
+        out["duo_dialog"] = duo_dialog
+    return out
 
 
 def _avatar_preview_video_path(avatar_dir: Path) -> Path | None:
@@ -115,16 +151,52 @@ def _video_media_type(path: Path) -> str:
 def _summary_from_dir(path: Path) -> AvatarSummary:
     b = load_avatar_bundle(path, strict=False)
     m = b.manifest
+    duo_dialog = duo_dialog_summary_from_metadata(m.metadata)
+    duo_capability = None
+    if duo_dialog is not None:
+        speaker_faces = duo_dialog.get('speaker_faces')
+        default_voices = duo_dialog.get('default_voices')
+        if isinstance(speaker_faces, dict) and isinstance(default_voices, dict):
+            duo_capability = DuoDialogCapability(
+                speaker_faces={str(key): str(value) for key, value in speaker_faces.items()},
+                default_voices={str(key): str(value) for key, value in default_voices.items()},
+            )
     return AvatarSummary(
         id=m.id,
         name=m.name,
         model_type=m.model_type,
         width=m.width,
         height=m.height,
-        is_custom=_is_custom_avatar(path / "manifest.json"),
+        person_mode=_person_mode_from_metadata(m.metadata),
+        is_custom=_is_custom_avatar(path / 'manifest.json'),
         has_preview_video=_avatar_preview_video_path(path) is not None,
-        matting_status=_avatar_matting_status(path / "manifest.json"),
+        matting_status=_avatar_matting_status(path / 'manifest.json'),
+        duo_dialog=duo_capability,
     )
+
+
+def _sort_avatar_summaries(summaries: list[AvatarSummary]) -> list[AvatarSummary]:
+    duo_rows: list[tuple[int, tuple[int, int | str, str, str], AvatarSummary]] = []
+    for index, summary in enumerate(summaries):
+        if summary.person_mode != "double" or summary.duo_dialog is None:
+            continue
+        name = (summary.name or "").strip()
+        match = re.fullmatch(r"双人对话(\d+)", name)
+        sort_key: tuple[int, int | str, str, str]
+        if match:
+            sort_key = (0, int(match.group(1)), name, summary.id)
+        else:
+            sort_key = (1, index, name, summary.id)
+        duo_rows.append((index, sort_key, summary))
+
+    if len(duo_rows) < 2:
+        return summaries
+
+    duo_indices = {index for index, _, _ in duo_rows}
+    anchor = min(duo_indices)
+    ordered_duo = [summary for _, _, summary in sorted(duo_rows, key=lambda item: item[1])]
+    remaining = [summary for index, summary in enumerate(summaries) if index not in duo_indices]
+    return remaining[:anchor] + ordered_duo + remaining[anchor:]
 
 
 def _slugify_name(value: str) -> str:
@@ -199,6 +271,7 @@ def _write_custom_avatar_manifest(
     avatar_id: str,
     name: str,
     model: str | None = None,
+    person_mode: PersonMode = "single",
 ) -> None:
     raw = json.loads(base_manifest_path.read_text(encoding="utf-8"))
     base_avatar_id = raw.get("id")
@@ -222,6 +295,7 @@ def _write_custom_avatar_manifest(
     metadata["reference_mode"] = "image"
     metadata["source_image"] = "source/source.png"
     metadata["matting_status"] = "opaque"
+    metadata = _apply_person_mode_metadata(metadata, person_mode)
     raw["metadata"] = metadata
     target_manifest_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -922,7 +996,7 @@ async def list_avatars(request: Request) -> list[AvatarSummary]:
             out.append(_summary_from_dir(d))
         except Exception:  # noqa: BLE001
             continue
-    return out
+    return _sort_avatar_summaries(out)
 
 
 @router.post("/custom", response_model=AvatarSummary)
@@ -931,6 +1005,7 @@ async def create_custom_avatar(
     base_avatar_id: str = Form(...),
     name: str = Form(...),
     model: str | None = Form(default=None),
+    person_mode: PersonMode = Form(default="single"),
     remove_background: bool = Form(default=False),
     image: UploadFile | None = File(default=None),
     video: UploadFile | None = File(default=None),
@@ -974,6 +1049,7 @@ async def create_custom_avatar(
             avatar_id=avatar_id,
             name=display_name,
             model=model,
+            person_mode=person_mode,
         )
         max_w, max_h = _custom_avatar_max_size()
         fitted_image = _resize_uploaded_avatar_image(image_rgb, max_width=max_w, max_height=max_h)
@@ -1036,6 +1112,28 @@ async def create_custom_avatar(
         raise HTTPException(status_code=500, detail=f"failed to create custom avatar: {exc}") from exc
 
     return _summary_from_dir(target_dir)
+
+
+@router.patch("/{avatar_id}/person-mode", response_model=AvatarSummary)
+async def update_avatar_person_mode(
+    avatar_id: str,
+    body: AvatarPersonModeUpdate,
+    request: Request,
+) -> AvatarSummary:
+    root = _avatars_root(request)
+    target = (root / avatar_id).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid avatar_id") from exc
+    manifest_path = target / "manifest.json"
+    if not target.is_dir() or not manifest_path.is_file():
+        raise HTTPException(status_code=404, detail="avatar not found")
+    raw = _read_manifest(manifest_path)
+    metadata = dict(raw.get("metadata") or {})
+    raw["metadata"] = _apply_person_mode_metadata(metadata, body.person_mode)
+    _write_manifest(manifest_path, raw)
+    return _summary_from_dir(target)
 
 
 @router.get("/{avatar_id}")
