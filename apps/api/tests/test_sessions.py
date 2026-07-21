@@ -17,6 +17,7 @@ import apps.api.routes.sessions as sessions_routes
 from apps.api.schemas.session import CreateSessionRequest
 import apps.unified.main as unified_main
 import opentalking.runtime.task_consumer as task_consumer
+from opentalking.providers.rtc.aiortc import adapter as aiortc_adapter
 from opentalking.core.in_memory_redis import InMemoryRedis
 from opentalking.core.model_config import clear_model_config_cache
 from opentalking.core.redis_keys import FLASHTALK_QUEUE_STATUS
@@ -64,6 +65,65 @@ def test_only_flashtalk_slot_models_use_flashtalk_slot(model: str) -> None:
 @pytest.mark.parametrize("model", ["fasterliveportrait", "quicktalk", "musetalk", "wav2lip"])
 def test_other_audio_renderers_do_not_use_flashtalk_slot(model: str) -> None:
     assert sessions_routes._uses_flashtalk_slot_model(model) is False
+
+
+def test_webrtc_ice_config_defaults_to_all_without_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "OPENTALKING_WEBRTC_ICE_SERVERS",
+        "OPENTALKING_WEBRTC_STUN_URLS",
+        "OPENTALKING_WEBRTC_STUN_URL",
+        "OPENTALKING_WEBRTC_TURN_URLS",
+        "OPENTALKING_WEBRTC_TURN_URL",
+        "OPENTALKING_WEBRTC_TURN_USERNAME",
+        "OPENTALKING_WEBRTC_TURN_CREDENTIAL",
+        "OPENTALKING_WEBRTC_ICE_TRANSPORT_POLICY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    payload = sessions_routes.get_webrtc_ice_config_payload()
+
+    assert payload["iceTransportPolicy"] == "all"
+    assert payload["iceServers"] == [{"urls": "stun:stun.l.google.com:19302"}]
+
+
+def test_webrtc_ice_config_defaults_to_relay_when_turn_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENTALKING_WEBRTC_ICE_SERVERS", raising=False)
+    monkeypatch.setenv("OPENTALKING_WEBRTC_TURN_URLS", "turns:turn.example.com:443?transport=tcp")
+    monkeypatch.setenv("OPENTALKING_WEBRTC_TURN_USERNAME", "turn-user")
+    monkeypatch.setenv("OPENTALKING_WEBRTC_TURN_CREDENTIAL", "turn-pass")
+
+    payload = sessions_routes.get_webrtc_ice_config_payload()
+
+    assert payload["iceTransportPolicy"] == "relay"
+    assert any(str(item["urls"]).startswith("turns:turn.example.com:443") for item in payload["iceServers"])
+
+
+def test_webrtc_server_ice_servers_can_use_internal_turn_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "OPENTALKING_WEBRTC_ICE_SERVERS",
+        '[{"urls":"turn:public.example.com:3478","username":"browser","credential":"public-pass"}]',
+    )
+    monkeypatch.setenv(
+        "OPENTALKING_WEBRTC_SERVER_ICE_SERVERS",
+        '[{"urls":"turn:127.0.0.1:3478","username":"server","credential":"server-pass"}]',
+    )
+
+    payload = sessions_routes.get_webrtc_ice_config_payload()
+    server_ice_servers = aiortc_adapter.get_webrtc_server_ice_servers()
+
+    assert payload["iceServers"] == [
+        {
+            "urls": "turn:public.example.com:3478",
+            "username": "browser",
+            "credential": "public-pass",
+        }
+    ]
+    assert len(server_ice_servers) == 1
+    assert server_ice_servers[0].urls == "turn:127.0.0.1:3478"
+    assert server_ice_servers[0].username == "server"
+    assert server_ice_servers[0].credential == "server-pass"
 
 
 @pytest.mark.parametrize(

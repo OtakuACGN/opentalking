@@ -164,7 +164,6 @@ Choose one of the two quickstart paths first:
 If you want to try the OpenTalking + OmniRT + QuickTalk real-time digital-human path before setting up everything manually, use the community image we published on Compshare:
 
 - Image URL: [image link](https://www.compshare.cn/images/TdDwmKZUZebI?referral_code=Hid5KUhcqlZEptmMEwKy2F)
-- Exposed port: `5173` (WebUI; API traffic is proxied internally)
 - Guide: [Compshare image quick experience](https://datascale-ai.github.io/opentalking/latest/en/quick-start/)
 
 The image includes OpenTalking, OmniRT, the QuickTalk runtime environment, and model files. After deploying an instance, open port `5173` and visit the instance URL provided by the platform. If you need to restart services manually, follow the commands in the guide.

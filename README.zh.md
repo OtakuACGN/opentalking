@@ -164,7 +164,6 @@ OpenTalking 的 **编排层**（API / Worker / 前端）和 **数字人合成后
 如果你只是想先体验 OpenTalking + OmniRT + QuickTalk 的实时数字人链路，可以直接使用我们在优云智算发布的社区镜像：
 
 - 镜像地址：[镜像链接](https://www.compshare.cn/images/TdDwmKZUZebI?referral_code=Hid5KUhcqlZEptmMEwKy2F)
-- 对外端口：`5173`（WebUI，内部自动代理 API）
 - 操作文档：[优云智算镜像快速体验](https://datascale-ai.github.io/opentalking/latest/quick-start/)
 
 镜像内已预置 OpenTalking、OmniRT、QuickTalk 运行环境和模型文件。部署实例后开放 `5173` 端口，在浏览器访问平台提供的实例地址即可进入 WebUI；如需手动重启服务，请按操作文档中的命令执行。
